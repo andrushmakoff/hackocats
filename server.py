@@ -1,115 +1,105 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Integer, Float, String, Table, MetaData, insert, select
+# server.py
 import os
+from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
-# --- Настройка сервера ---
-app = FastAPI()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# --- CORS ---
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# берём хост БД из переменных окружения (если не задано — localhost)
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_NAME = os.getenv("DB_NAME", "gerkon_db")
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASS = os.getenv("DB_PASS", "sqlbase7comiloveu")
+DB_PORT = int(os.getenv("DB_PORT", 5432))
 
-# --- Подключение к SQLite ---
-db_path = os.path.join(BASE_DIR, "map.db")
-db = create_engine(f"sqlite:///{db_path}", echo=False)
-meta = MetaData()
+app = FastAPI(title="Map API")
 
-# --- Таблицы ---
-points = Table(
-    "points", meta,
-    Column("id", Integer, primary_key=True),
-    Column("lat", Float),
-    Column("lon", Float),
-    Column("type", String)
-)
+# монтируем статические файлы (папка ./static)
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
-lines = Table(
-    "lines", meta,
-    Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("a", Integer),
-    Column("b", Integer)
-)
+@app.get("/")
+def root():
+    return FileResponse(os.path.join(BASE_DIR, "static", "index.html"))
 
-meta.create_all(db)
-
-# --- Модели ---
-class Point(BaseModel):
-    id: int
+# Pydantic модель
+class PointCreate(BaseModel):
+    type: str
+    name: str | None = None
+    description: str | None = None
     lat: float
     lon: float
-    type: str
 
-class Line(BaseModel):
-    a: int
-    b: int
+# глобальные переменные для соединения/курсора
+conn = None
+cursor = None
 
-# --- API ---
-@app.get("/api/get_all")
-def get_all():
-    with db.connect() as conn:
-        pts = conn.execute(select(points)).fetchall()
-        lns = conn.execute(select(lines)).fetchall()
-        return {
-            "points": [{"id": p.id, "lat": p.lat, "lon": p.lon, "type": p.type} for p in pts],
-            "lines": [{"a": l.a, "b": l.b} for l in lns]
-        }
+@app.on_event("startup")
+def startup():
+    global conn, cursor
+    try:
+        conn = psycopg2.connect(
+            dbname=DB_NAME,
+            user=DB_USER,
+            password=DB_PASS,
+            host=DB_HOST,    # <- здесь используется переменная, а не строка "DB_HOST"
+            port=DB_PORT
+        )
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        print("Connected to Postgres:", DB_HOST)
+    except Exception as e:
+        # печатаем ошибку, чтобы видел при запуске
+        print("Failed to connect to Postgres:", e)
+        raise
+
+@app.on_event("shutdown")
+def shutdown():
+    global conn, cursor
+    try:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+    except Exception:
+        pass
 
 @app.post("/api/add_point")
-def add_point(pt: Point):
-    with db.connect() as conn:
-        conn.execute(insert(points).values(id=pt.id, lat=pt.lat, lon=pt.lon, type=pt.type))
-        conn.commit()
-    return {"status": "ok"}
+def add_point(point: PointCreate):
 
-@app.post("/api/update_point")
-def update_point(pt: Point):
-    with db.connect() as conn:
-        result = conn.execute(
-            points.update().where(points.c.id == pt.id).values(lat=pt.lat, lon=pt.lon)
-        )
+    query = """
+        INSERT INTO objects (type, name, description, location)
+        VALUES (%s, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326))
+        RETURNING id
+    """
+    try:
+        cursor.execute(query, (point.type, point.name, point.description, point.lon, point.lat))
         conn.commit()
-    if result.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Point not found")
-    return {"status": "ok"}
+        new = cursor.fetchone()
+        return {"status": "ok", "id": new["id"]}
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/delete_point")
-def delete_point(pt: Point):
-    with db.connect() as conn:
-        # удаляем линии с этой точкой
-        conn.execute(lines.delete().where((lines.c.a == pt.id) | (lines.c.b == pt.id)))
-        # удаляем саму точку
-        result = conn.execute(points.delete().where(points.c.id == pt.id))
-        conn.commit()
-    if result.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Point not found")
-    return {"status": "ok"}
-
-@app.post("/api/add_line")
-def add_line(line: Line):
-    with db.connect() as conn:
-        conn.execute(insert(lines).values(a=line.a, b=line.b))
-        conn.commit()
-    return {"status": "ok"}
-
-@app.post("/api/delete_line")
-def delete_line(line: Line):
-    with db.connect() as conn:
-        result = conn.execute(
-            lines.delete().where((lines.c.a == line.a) & (lines.c.b == line.b))
-        )
-        conn.commit()
-    if result.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Line not found")
-    return {"status": "ok"}
-
-# --- Статика (index.html и PNG-иконки) ---
-app.mount("/", StaticFiles(directory=BASE_DIR, html=True), name="static")
+@app.get("/api/get_all")
+def get_all():
+    query = """
+        SELECT
+            id,
+            type,
+            name,
+            description,
+            ST_Y(location::geometry) AS lat,
+            ST_X(location::geometry) AS lon,
+            created_at,
+            updated_at
+        FROM objects
+    """
+    try:
+        cursor.execute(query)
+        rows = cursor.fetchall()  # список dict
+        return {"points": rows}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

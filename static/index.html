@@ -54,7 +54,7 @@ document.querySelectorAll('.item-btn').forEach(btn => {
 // --- ИНИЦИАЛИЗАЦИЯ КАРТЫ ---
 ymaps.ready(() => {
     map = new ymaps.Map("map", {
-        center: [55.75, 37.57],
+        center: [56.85, 60.60],
         zoom: 10
     });
 
@@ -75,7 +75,7 @@ function createPlacemark(id, type, coords, saveToDB = false) {
         hasBalloon: false,
         hasHint: false,
         iconLayout: 'default#image',
-        iconImageHref: `icons/${type}.png`, // Используем PNG
+        iconImageHref: `static/icons/${type}.png`, // Используем PNG
         iconImageSize: [32, 32],
         iconImageOffset: [-16, -16]
     });
@@ -87,19 +87,19 @@ function createPlacemark(id, type, coords, saveToDB = false) {
         fetch("/api/add_point", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({ id, type, lat: coords[0], lon: coords[1] })
+            body: JSON.stringify({type, name: null, description: null, lat: coords[0], lon: coords[1]}) // пока без описания и имени
         });
     }
-
-    pm.events.add("dragend", () => {
-        const c = pm.geometry.getCoordinates();
-        fetch("/api/update_point", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({ id, lat: c[0], lon: c[1] })
-        });
-        redrawLines();
-    });
+    // перетаскивание
+    // pm.events.add("dragend", () => {
+    //     const c = pm.geometry.getCoordinates();
+    //     fetch("/api/update_point", {
+    //         method: "POST",
+    //         headers: {"Content-Type": "application/json"},
+    //         body: JSON.stringify({ id, lat: c[0], lon: c[1] })
+    //     });
+    //     redrawLines();
+    // });
 
     pm.events.add("click", e => {
         const shift = e.get("domEvent").originalEvent.shiftKey;
@@ -175,16 +175,16 @@ async function loadAll() {
     data.points.forEach(p => {
         createPlacemark(p.id, p.type, [p.lat, p.lon], false);
     });
+    //  пока без линий 
+    // data.lines.forEach(l => {
+    //     const line = new ymaps.Polyline([
+    //         placemarks[l.a].pm.geometry.getCoordinates(),
+    //         placemarks[l.b].pm.geometry.getCoordinates()
+    //     ], {}, { strokeWidth: 3 });
 
-    data.lines.forEach(l => {
-        const line = new ymaps.Polyline([
-            placemarks[l.a].pm.geometry.getCoordinates(),
-            placemarks[l.b].pm.geometry.getCoordinates()
-        ], {}, { strokeWidth: 3 });
-
-        map.geoObjects.add(line);
-        lines.push({ a: l.a, b: l.b, line });
-    });
+    //     map.geoObjects.add(line);
+    //     lines.push({ a: l.a, b: l.b, line });
+    // });
 }
 </script>
 </body>
