@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Карта объектов</title>
+<script src="https://api-maps.yandex.ru/2.1/?lang=ru_RU"></script>
+<style>
+html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; font-family: Arial; }
+#container { display: flex; width: 100%; height: 100%; }
+#sidebar { width: 250px; background: #ececec; padding: 15px; border-right: 1px solid #bbb; box-sizing: border-box; }
+#sidebar h3 { margin-top: 0; }
+.item-btn { width: 100%; padding: 10px; margin-bottom: 8px; cursor: pointer; background: #fff; border: 1px solid #999; border-radius: 6px; text-align: left; transition: 0.15s; }
+.item-btn.active { background: #4da3ff !important; color: white; border-color: #1274d1; }
+#map { flex-grow: 1; height: 100%; }
+</style>
+</head>
+<body>
+<div id="container">
+    <div id="sidebar">
+        <h3>Выберите объект</h3>
+        <button class="item-btn" data-type="node">Узел</button>
+        <button class="item-btn" data-type="muff">Муфта</button>
+        <button class="item-btn" data-type="box">Шкаф</button>
+        <button class="item-btn" data-type="splitter">Оптический делитель</button>
+        <button class="item-btn" data-type="subscriber">Абонент</button>
+        <button class="item-btn" data-type="pole">Опора</button>
+        <button class="item-btn" data-type="well">Колодец</button>
+        <button class="item-btn" data-type="camera">Видеокамера</button>
+        <button class="item-btn" data-type="wifi">Wi-Fi тарелка</button>
+        <hr>
+        <p><b>Текущий объект:</b></p>
+        <p id="selectedType">Не выбран</p>
+    </div>
+    <div id="map"></div>
+</div>
+
+<script>
+let selectedType = null;
+let map;
+let placemarks = {};   // id → {pm, type}
+let lines = [];        // {a, b, line}
+let selectedPoint = null;
+
+// --- Меню выбора ---
+document.querySelectorAll('.item-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.item-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        selectedType = btn.dataset.type;
+        document.getElementById("selectedType").innerText = btn.innerText;
+    });
+});
+
+// --- ИНИЦИАЛИЗАЦИЯ КАРТЫ ---
+ymaps.ready(() => {
+    map = new ymaps.Map("map", {
+        center: [55.75, 37.57],
+        zoom: 10
+    });
+
+    loadAll();
+
+    map.events.add("click", e => {
+        if (!selectedType) return;
+        const coords = e.get("coords");
+        const id = Date.now();
+        createPlacemark(id, selectedType, coords, true);
+    });
+});
+
+// --- СОЗДАНИЕ ТОЧКИ ---
+function createPlacemark(id, type, coords, saveToDB = false) {
+    const pm = new ymaps.Placemark(coords, {}, {
+        draggable: true,
+        hasBalloon: false,
+        hasHint: false,
+        iconLayout: 'default#image',
+        iconImageHref: `icons/${type}.png`, // Используем PNG
+        iconImageSize: [32, 32],
+        iconImageOffset: [-16, -16]
+    });
+
+    map.geoObjects.add(pm);
+    placemarks[id] = { pm, type };
+
+    if (saveToDB) {
+        fetch("/api/add_point", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ id, type, lat: coords[0], lon: coords[1] })
+        });
+    }
+
+    pm.events.add("dragend", () => {
+        const c = pm.geometry.getCoordinates();
+        fetch("/api/update_point", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ id, lat: c[0], lon: c[1] })
+        });
+        redrawLines();
+    });
+
+    pm.events.add("click", e => {
+        const shift = e.get("domEvent").originalEvent.shiftKey;
+        if (shift) { deletePoint(id); return; }
+        handleLineConnect(id);
+    });
+}
+
+// --- Удаление точки ---
+function deletePoint(id) {
+    map.geoObjects.remove(placemarks[id].pm);
+
+    lines = lines.filter(l => {
+        if (l.a === id || l.b === id) {
+            map.geoObjects.remove(l.line);
+            return false;
+        }
+        return true;
+    });
+
+    fetch("/api/delete_point", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ id })
+    });
+
+    delete placemarks[id];
+    if (selectedPoint === id) selectedPoint = null;
+}
+
+// --- Линии ---
+function handleLineConnect(id) {
+    if (!selectedPoint) {
+        selectedPoint = id;
+        placemarks[id].pm.options.set("preset", "islands#redIcon");
+        return;
+    }
+
+    if (selectedPoint === id) return;
+
+    const line = new ymaps.Polyline([
+        placemarks[selectedPoint].pm.geometry.getCoordinates(),
+        placemarks[id].pm.geometry.getCoordinates()
+    ], {}, { strokeWidth: 3 });
+
+    map.geoObjects.add(line);
+    lines.push({ a: selectedPoint, b: id, line });
+
+    fetch("/api/add_line", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ a: selectedPoint, b: id })
+    });
+
+    placemarks[selectedPoint].pm.options.unset("preset");
+    selectedPoint = null;
+}
+
+function redrawLines() {
+    lines.forEach(l => {
+        l.line.geometry.setCoordinates([
+            placemarks[l.a].pm.geometry.getCoordinates(),
+            placemarks[l.b].pm.geometry.getCoordinates()
+        ]);
+    });
+}
+
+// --- Загрузка из БД ---
+async function loadAll() {
+    const res = await fetch("/api/get_all");
+    const data = await res.json();
+
+    data.points.forEach(p => {
+        createPlacemark(p.id, p.type, [p.lat, p.lon], false);
+    });
+
+    data.lines.forEach(l => {
+        const line = new ymaps.Polyline([
+            placemarks[l.a].pm.geometry.getCoordinates(),
+            placemarks[l.b].pm.geometry.getCoordinates()
+        ], {}, { strokeWidth: 3 });
+
+        map.geoObjects.add(line);
+        lines.push({ a: l.a, b: l.b, line });
+    });
+}
+</script>
+</body>
+</html>
