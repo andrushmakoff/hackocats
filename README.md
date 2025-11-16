@@ -37,7 +37,7 @@
 
 4. Запустите сервер разработки:
    ```bash
-   uvicorn server:app --reload
+   uvicorn server:app --reload --port 8000
    ```
 
 После запуска сервера карта будет доступна по адресу:  
