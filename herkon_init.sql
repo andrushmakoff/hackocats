@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS api_tokens (
     expires_at TIMESTAMP
 );
 
-CREATE TABLE regions (
+CREATE TABLE IF NOT EXISTS regions (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,                  -- Название региона
     center GEOGRAPHY(POINT, 4326),       -- Центр карты (куда зумить)
