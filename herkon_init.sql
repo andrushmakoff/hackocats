@@ -7,7 +7,7 @@ CREATE EXTENSION IF NOT EXISTS postgis_topology;
 -- Ваш оригинальный скрипт (я его чуть подправил — добавил IF NOT EXISTS где нужно, чтобы можно было перезапускать)
 DO $$ BEGIN
     CREATE TYPE object_type AS ENUM (
-        'node', 'muf', 'cabinet', 'splitter', 'abonent',
+        'node', 'muff', 'box', 'splitter', 'subscriber  ',
         'cable', 'pole', 'camera', 'well', 'wifi'
     );
 EXCEPTION
