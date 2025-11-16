@@ -9,7 +9,7 @@ from psycopg2.extras import RealDictCursor
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# берём хост БД из переменных окружения (если не задано — localhost)
+# DB configs
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_NAME = os.getenv("DB_NAME", "gerkon_db")
 DB_USER = os.getenv("DB_USER", "postgres")
@@ -18,14 +18,15 @@ DB_PORT = int(os.getenv("DB_PORT", 5432))
 
 app = FastAPI(title="Map API")
 
-# монтируем статические файлы (папка ./static)
+# static
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 @app.get("/")
 def root():
     return FileResponse(os.path.join(BASE_DIR, "static", "index.html"))
 
-# Pydantic модель
+# БАЗОВЫЕ МОДЕЛИ ---------------------
+
 class PointCreate(BaseModel):
     type: str
     name: str | None = None
@@ -33,7 +34,16 @@ class PointCreate(BaseModel):
     lat: float
     lon: float
 
-# глобальные переменные для соединения/курсора
+class PointUpdate(BaseModel):
+    id: int
+    name: str | None
+    description: str | None
+
+class PointDelete(BaseModel):
+    id: int
+
+# DB CONNECTION -----------------------
+
 conn = None
 cursor = None
 
@@ -45,15 +55,15 @@ def startup():
             dbname=DB_NAME,
             user=DB_USER,
             password=DB_PASS,
-            host=DB_HOST,    # <- здесь используется переменная, а не строка "DB_HOST"
+            host=DB_HOST,
             port=DB_PORT
         )
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         print("Connected to Postgres:", DB_HOST)
     except Exception as e:
-        # печатаем ошибку, чтобы видел при запуске
         print("Failed to connect to Postgres:", e)
         raise
+
 
 @app.on_event("shutdown")
 def shutdown():
@@ -65,6 +75,8 @@ def shutdown():
             conn.close()
     except Exception:
         pass
+
+# API ------------------------------------
 
 @app.post("/api/add_point")
 def add_point(point: PointCreate):
@@ -83,6 +95,7 @@ def add_point(point: PointCreate):
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/api/get_all")
 def get_all():
     query = """
@@ -99,7 +112,37 @@ def get_all():
     """
     try:
         cursor.execute(query)
-        rows = cursor.fetchall()  # список dict
+        rows = cursor.fetchall()
         return {"points": rows}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/update_point")
+def update_point(data: PointUpdate):
+    query = """
+        UPDATE objects
+        SET name = %s,
+            description = %s,
+            updated_at = NOW()
+        WHERE id = %s
+    """
+    try:
+        cursor.execute(query, (data.name, data.description, data.id))
+        conn.commit()
+        return {"status": "ok"}
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/delete_point")
+def delete_point(data: PointDelete):
+    query = "DELETE FROM objects WHERE id = %s"
+    try:
+        cursor.execute(query, (data.id,))
+        conn.commit()
+        return {"status": "ok"}
+    except Exception as e:
+        conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
