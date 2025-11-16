@@ -42,6 +42,10 @@ class PointUpdate(BaseModel):
 class PointDelete(BaseModel):
     id: int
 
+class LineCreate(BaseModel):
+    a: int
+    b: int
+
 # DB CONNECTION -----------------------
 
 conn = None
@@ -145,4 +149,48 @@ def delete_point(data: PointDelete):
         return {"status": "ok"}
     except Exception as e:
         conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ------------------- Линии ----------------------
+
+# Добавляем таблицу lines (если её нет)
+@app.on_event("startup")
+def create_lines_table():
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS lines (
+                id SERIAL PRIMARY KEY,
+                from_object_id INT REFERENCES objects(id) ON DELETE CASCADE,
+                to_object_id INT REFERENCES objects(id) ON DELETE CASCADE
+            )
+        """)
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print("Failed to create lines table:", e)
+
+@app.post("/api/add_line")
+def add_line(line: LineCreate):
+    query = """
+        INSERT INTO lines (from_object_id, to_object_id)
+        VALUES (%s, %s)
+        RETURNING id
+    """
+    try:
+        cursor.execute(query, (line.a, line.b))
+        conn.commit()
+        new = cursor.fetchone()
+        return {"status": "ok", "id": new["id"]}
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/get_lines")
+def get_lines():
+    query = "SELECT id, from_object_id, to_object_id FROM lines"
+    try:
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        return {"lines": rows}
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
