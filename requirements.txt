@@ -1,0 +1,4 @@
+fastapi==0.121.2
+pydantic==2.10.2
+psycopg2==2.9.11
+uvicorn[standard]
