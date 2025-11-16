@@ -50,9 +50,9 @@ CREATE TABLE IF NOT EXISTS cables (
     object_id INT REFERENCES objects(id) ON DELETE CASCADE,
     fiber_count INT,
     length_meters FLOAT,
-    color TEXT NOT NULL
+    color TEXT NOT NULL,
     start_object_id INT REFERENCES objects(id),
-    end_object_id INT REFERENCES objects(id),
+    end_object_id INT REFERENCES objects(id)
 );
 
 CREATE TABLE IF NOT EXISTS cable_geometry (
