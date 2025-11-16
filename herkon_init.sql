@@ -97,3 +97,54 @@ CREATE TABLE IF NOT EXISTS api_tokens (
     token TEXT NOT NULL,
     expires_at TIMESTAMP
 );
+
+CREATE TABLE regions (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,                  -- Название региона
+    center GEOGRAPHY(POINT, 4326),       -- Центр карты (куда зумить)
+    zoom INT DEFAULT 13                  -- Начальный зум
+);
+
+CREATE TABLE IF NOT EXISTS map_tile_layers (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    layer_type TEXT NOT NULL,
+    url TEXT NOT NULL,
+    attribution TEXT,
+    is_default BOOLEAN DEFAULT FALSE,
+    min_zoom INT DEFAULT 0,
+    max_zoom INT DEFAULT 19
+);
+
+CREATE TABLE IF NOT EXISTS splitters (
+    id SERIAL PRIMARY KEY,
+    object_id INT NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
+    input_port_count INT DEFAULT 1,
+    output_port_count INT NOT NULL,
+    ratio TEXT NOT NULL,               -- '1:2', '1:4', '1:8', ...
+    manufacturer TEXT,
+    model TEXT,
+    insertion_loss FLOAT               -- потери
+);
+
+CREATE TABLE IF NOT EXISTS splitter_ports (
+    id SERIAL PRIMARY KEY,
+    splitter_id INT NOT NULL REFERENCES splitters(id) ON DELETE CASCADE,
+    port_number INT NOT NULL,
+    port_type TEXT NOT NULL,           -- 'input' или 'output'
+    connected_fiber_id INT REFERENCES fibers(id),
+    UNIQUE(splitter_id, port_number)
+);
+
+
+INSERT INTO map_tile_layers (name, layer_type, url, attribution, is_default) VALUES
+('OSM Standard', 'tile', 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+ E'© OpenStreetMap contributors', TRUE),
+('OSM Humanitarian', 'tile', 'https://tile-a.openstreetmap.fr/hot/{z}/{x}/{y}.png',
+ E'© OpenStreetMap contributors', FALSE),
+('Google Satellite (proxy)', 'tile', 'https://your-proxy/google/sat/{z}/{x}/{y}.jpg',
+ E'© Google LLC', FALSE),
+('Yandex Satellite (proxy)', 'tile', 'https://your-proxy/yandex/sat/{z}/{x}/{y}.jpg',
+ E'© Yandex LLC', FALSE),
+('Корпоративная карта', 'tile', 'https://tiles.company.local/main/{z}/{x}/{y}.png',
+ E'© Company GIS', FALSE);
