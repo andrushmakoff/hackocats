@@ -85,7 +85,6 @@ html, body { height:100%; margin:0; font-family:Arial, Helvetica, sans-serif; }
     <button class="item-btn" data-type="box">Шкаф</button>
     <button class="item-btn" data-type="splitter">Оптический делитель</button>
     <button class="item-btn" data-type="subscriber">Абонент</button>
-    <button class="item-btn" data-type="cable">Кабель</button>
     <button class="item-btn" data-type="pole">Опора</button>
     <button class="item-btn" data-type="well">Колодец</button>
     <button class="item-btn" data-type="camera">Видеокамера</button>
@@ -123,19 +122,18 @@ html, body { height:100%; margin:0; font-family:Arial, Helvetica, sans-serif; }
 
 <script>
 (async function(){
-    const API_GET_ALL = '/api/get_all';
-    const API_ADD_POINT = '/api/add_point';
-    const API_UPDATE_POINT = '/api/update_point';
-    const API_DELETE_POINT = '/api/delete_point';
-    const API_ADD_LINE = '/api/add_line';
-    const API_GET_LINES = '/api/get_lines';
+    const API_POINTS = '/api/points';
+    const API_LINES = '/api/lines';
 
     let map, selectedType = null, placemarks = {}, lines = [], firstForLine = null;
     let currentEditingId = null;
 
     const toggleBtn = document.getElementById('toggleBtn');
     const sidebar = document.getElementById('sidebar');
-    toggleBtn.addEventListener('click', ()=>{ sidebar.classList.toggle('active'); toggleBtn.classList.toggle('active'); });
+    toggleBtn.addEventListener('click', ()=>{ 
+        sidebar.classList.toggle('active'); 
+        toggleBtn.classList.toggle('active'); 
+    });
 
     document.querySelectorAll('.item-btn').forEach(btn=>{
         btn.addEventListener('click', ()=>{
@@ -155,15 +153,15 @@ html, body { height:100%; margin:0; font-family:Arial, Helvetica, sans-serif; }
             const coords = e.get('coords');
             await createPlacemark(null, selectedType, coords, true);
         });
-        await loadAll();
-        await loadLines();
+        await loadAllPoints();
+        await loadAllLines();
     }
 
     async function createPlacemark(id,type,coords,saveToDB=false){
         let serverId = id;
         if(saveToDB){
             try{
-                const res = await fetch(API_ADD_POINT,{
+                const res = await fetch(API_POINTS,{
                     method:'POST',
                     headers:{'Content-Type':'application/json'},
                     body: JSON.stringify({ type,name:null,description:null,lat:coords[0],lon:coords[1] })
@@ -185,9 +183,7 @@ html, body { height:100%; margin:0; font-family:Arial, Helvetica, sans-serif; }
         map.geoObjects.add(pm);
         placemarks[serverId] = { pm,type,name:null,description:null };
 
-        pm.events.add('dragend', async ()=>{
-            redrawLines();
-        });
+        pm.events.add('dragend', ()=>{ redrawLines(); });
 
         pm.events.add('click',(e)=>{
             const domEv = e.get('domEvent').originalEvent;
@@ -210,7 +206,7 @@ html, body { height:100%; margin:0; font-family:Arial, Helvetica, sans-serif; }
             map.geoObjects.add(poly);
             lines.push({a:firstForLine,b:serverId,line:poly});
 
-            fetch(API_ADD_LINE,{
+            fetch(API_LINES,{
                 method:'POST',
                 headers:{'Content-Type':'application/json'},
                 body: JSON.stringify({a:firstForLine,b:serverId})
@@ -220,17 +216,15 @@ html, body { height:100%; margin:0; font-family:Arial, Helvetica, sans-serif; }
             firstForLine=null;
         });
 
-        pm.events.add('contextmenu', async ()=>{
-            await deletePoint(serverId);
-        });
+        pm.events.add('contextmenu', async ()=>{ await deletePoint(serverId); });
 
         return serverId;
     }
 
-    async function loadAll(){
-        const res = await fetch(API_GET_ALL);
-        const obj = await res.json();
-        for(const p of obj.points||[]){
+    async function loadAllPoints(){
+        const res = await fetch(API_POINTS);
+        const data = await res.json();
+        for(const p of data||[]){
             await createPlacemark(p.id,p.type,[p.lat,p.lon],false);
             if(placemarks[p.id]){
                 placemarks[p.id].name = p.name;
@@ -239,10 +233,10 @@ html, body { height:100%; margin:0; font-family:Arial, Helvetica, sans-serif; }
         }
     }
 
-    async function loadLines(){
-        const res = await fetch(API_GET_LINES);
+    async function loadAllLines(){
+        const res = await fetch(API_LINES);
         const data = await res.json();
-        for(const l of data.lines||[]){
+        for(const l of data||[]){
             const a=l.from_object_id,b=l.to_object_id;
             if(!placemarks[a]||!placemarks[b]) continue;
             const coordsA=placemarks[a].pm.geometry.getCoordinates();
@@ -265,7 +259,9 @@ html, body { height:100%; margin:0; font-family:Arial, Helvetica, sans-serif; }
     }
 
     async function deletePoint(id){
-        try{ await fetch(API_DELETE_POINT,{ method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id}) }); }catch(e){}
+        try{ 
+            await fetch(`${API_POINTS}/${id}`,{ method:'DELETE' }); 
+        }catch(e){}
         if(!placemarks[id]) return;
         map.geoObjects.remove(placemarks[id].pm);
         lines.filter(l=>l.a===id||l.b===id).forEach(l=>map.geoObjects.remove(l.line));
@@ -291,7 +287,6 @@ html, body { height:100%; margin:0; font-family:Arial, Helvetica, sans-serif; }
         currentEditingId=null;
     }
 
-    // События панели редактирования
     document.getElementById('epSave').onclick=async ()=>{
         if(!currentEditingId) return;
         const name=document.getElementById('epName').value;
@@ -299,10 +294,10 @@ html, body { height:100%; margin:0; font-family:Arial, Helvetica, sans-serif; }
         placemarks[currentEditingId].name=name;
         placemarks[currentEditingId].description=desc;
         try{
-            await fetch(API_UPDATE_POINT,{
-                method:'POST',
+            await fetch(`${API_POINTS}/${currentEditingId}`,{
+                method:'PATCH',
                 headers:{'Content-Type':'application/json'},
-                body:JSON.stringify({id:currentEditingId,name:name,description:desc})
+                body: JSON.stringify({name,description:desc})
             });
         }catch(e){ console.warn(e); }
     };
@@ -312,6 +307,7 @@ html, body { height:100%; margin:0; font-family:Arial, Helvetica, sans-serif; }
         await deletePoint(currentEditingId);
         closeEditPanel();
     };
+
 })();
 </script>
 </body>

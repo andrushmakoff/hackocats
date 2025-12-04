@@ -1,171 +1,164 @@
-import express from "express";
-import path from "path";
-import dotenv from "dotenv";
-import { fileURLToPath } from "url";
-import pkg from "pg";
+// server.js
+const express = require("express");
+const { Pool } = require("pg");
+const path = require("path");
+const bodyParser = require("body-parser");
 
-dotenv.config();
-const { Pool } = pkg;
-
-// ---------------------------
-// Base DIR fix for ES Modules
-// ---------------------------
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// ---------------------------
-// Express Init
-// ---------------------------
 const app = express();
-app.use(express.json());
+const PORT = 8000;
 
-// ---------------------------
-// Static Directory
-// ---------------------------
+// ========= MIDDLEWARE =========
+app.use(bodyParser.json());
 app.use("/static", express.static(path.join(__dirname, "static")));
 
-app.get("/", (req, res) => {
-    res.sendFile(path.join(__dirname, "static", "index.html"));
-});
-
-// ---------------------------
-// PostgreSQL (Pool)
-// ---------------------------
+// ========= POSTGRES =========
 const pool = new Pool({
-    host: process.env.DB_HOST,
-    database: process.env.DB_NAME,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASS,
-    port: process.env.DB_PORT
+  host: "localhost",
+  user: "postgres",
+  password: "sqlbase7comiloveu",
+  database: "gerkon_db",
+  port: 5432,
 });
 
-// ------------------------------
-// Create lines table on startup
-// ------------------------------
-async function initDatabase() {
-    try {
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS lines (
-                id SERIAL PRIMARY KEY,
-                from_object_id INT REFERENCES objects(id) ON DELETE CASCADE,
-                to_object_id INT REFERENCES objects(id) ON DELETE CASCADE
-            );
-        `);
-        console.log("Table 'lines' checked/created.");
-    } catch (err) {
-        console.error("DB init error:", err);
-    }
+// ========= ИНИЦИАЛИЗАЦИЯ БАЗЫ =========
+async function initDB() {
+  const client = await pool.connect();
+  try {
+    // Таблица объектов (точек)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS objects (
+        id SERIAL PRIMARY KEY,
+        type VARCHAR(50) NOT NULL,
+        name VARCHAR(255),
+        description TEXT,
+        location GEOGRAPHY(POINT,4326),
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    // Таблица линий
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS lines (
+        id SERIAL PRIMARY KEY,
+        from_object_id INT REFERENCES objects(id) ON DELETE CASCADE,
+        to_object_id INT REFERENCES objects(id) ON DELETE CASCADE
+      );
+    `);
+  } finally {
+    client.release();
+  }
 }
 
-initDatabase();
+initDB().catch(console.error);
 
-// =========================================
-// ===============   API   =================
-// =========================================
+// ========= ROUTES =========
 
-// CREATE POINT ----------------------------
-app.post("/api/add_point", async (req, res) => {
-    const { type, name, description, lat, lon } = req.body;
-
-    try {
-        const query = `
-            INSERT INTO objects (type, name, description, location)
-            VALUES ($1, $2, $3, ST_SetSRID(ST_MakePoint($4, $5), 4326))
-            RETURNING id
-        `;
-        const result = await pool.query(query, [type, name, description, lon, lat]);
-        res.json({ status: "ok", id: result.rows[0].id });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+// Статическая главная страница
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "static", "index.html"));
 });
 
-// GET ALL POINTS --------------------------
-app.get("/api/get_all", async (req, res) => {
-    try {
-        const query = `
-            SELECT
-                id,
-                type,
-                name,
-                description,
-                ST_Y(location::geometry) AS lat,
-                ST_X(location::geometry) AS lon,
-                created_at,
-                updated_at
-            FROM objects;
-        `;
-        const result = await pool.query(query);
-        res.json({ points: result.rows });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+// -------- POINTS --------
+
+// GET all points
+app.get("/api/points", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const result = await client.query(`
+      SELECT id, type, name, description,
+             ST_Y(location::geometry) AS lat,
+             ST_X(location::geometry) AS lon
+      FROM objects;
+    `);
+    res.json(result.rows);
+  } finally {
+    client.release();
+  }
 });
 
-// UPDATE POINT ----------------------------
-app.post("/api/update_point", async (req, res) => {
-    const { id, name, description } = req.body;
-
-    try {
-        const query = `
-            UPDATE objects
-            SET name = $1,
-                description = $2,
-                updated_at = NOW()
-            WHERE id = $3
-        `;
-        await pool.query(query, [name, description, id]);
-        res.json({ status: "ok" });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+// POST create point
+app.post("/api/points", async (req, res) => {
+  const { type, name, description, lat, lon } = req.body;
+  const client = await pool.connect();
+  try {
+    const result = await client.query(
+      `INSERT INTO objects (type,name,description,location)
+       VALUES ($1,$2,$3,ST_SetSRID(ST_MakePoint($4,$5),4326))
+       RETURNING *;`,
+      [type, name, description, lon, lat]
+    );
+    res.json(result.rows[0]);
+  } finally {
+    client.release();
+  }
 });
 
-// DELETE POINT ----------------------------
-app.post("/api/delete_point", async (req, res) => {
-    const { id } = req.body;
-
-    try {
-        await pool.query(`DELETE FROM objects WHERE id = $1`, [id]);
-        res.json({ status: "ok" });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+// PATCH update point
+app.patch("/api/points/:id", async (req, res) => {
+  const { id } = req.params;
+  const { name, description } = req.body;
+  const client = await pool.connect();
+  try {
+    const result = await client.query(
+      `UPDATE objects SET name=$1, description=$2, updated_at=NOW() WHERE id=$3 RETURNING *;`,
+      [name, description, id]
+    );
+    if (result.rows.length === 0) {
+      res.status(404).json({ error: "Point not found" });
+    } else {
+      res.json({ status: "ok" });
     }
+  } finally {
+    client.release();
+  }
 });
 
-// =========================================
-// ===============  LINES  =================
-// =========================================
-
-// ADD LINE --------------------------------
-app.post("/api/add_line", async (req, res) => {
-    const { a, b } = req.body;
-
-    try {
-        const query = `
-            INSERT INTO lines (from_object_id, to_object_id)
-            VALUES ($1, $2)
-            RETURNING id
-        `;
-        const result = await pool.query(query, [a, b]);
-        res.json({ status: "ok", id: result.rows[0].id });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+// DELETE point
+app.delete("/api/points/:id", async (req, res) => {
+  const { id } = req.params;
+  const client = await pool.connect();
+  try {
+    const result = await client.query(`DELETE FROM objects WHERE id=$1 RETURNING *;`, [id]);
+    if (result.rows.length === 0) {
+      res.status(404).json({ error: "Point not found" });
+    } else {
+      res.json({ status: "deleted", id: Number(id) });
     }
+  } finally {
+    client.release();
+  }
 });
 
-// GET LINES -------------------------------
-app.get("/api/get_lines", async (req, res) => {
-    try {
-        const result = await pool.query("SELECT id, from_object_id, to_object_id FROM lines");
-        res.json({ lines: result.rows });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+// -------- LINES --------
+
+// GET all lines
+app.get("/api/lines", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const result = await client.query("SELECT id, from_object_id, to_object_id FROM lines;");
+    res.json(result.rows);
+  } finally {
+    client.release();
+  }
 });
 
-// =========================================
-// =============== SERVER ==================
-// =========================================
-const PORT = 3000;
-app.listen(PORT, () => console.log("Server running on http://localhost:" + PORT));
+// POST create line
+app.post("/api/lines", async (req, res) => {
+  const { a, b } = req.body;
+  const client = await pool.connect();
+  try {
+    const result = await client.query(
+      `INSERT INTO lines (from_object_id, to_object_id) VALUES ($1,$2) RETURNING *;`,
+      [a, b]
+    );
+    res.json(result.rows[0]);
+  } finally {
+    client.release();
+  }
+});
+
+// ========= SERVER =========
+app.listen(PORT, () => {
+  console.log(`Server running at http://localhost:${PORT}`);
+});

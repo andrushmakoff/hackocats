@@ -1,196 +1,176 @@
-# server.py
 import os
+from typing import List, Optional
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+# ========= БАЗА ДАННЫХ =========
+
+DB_CONFIG = {
+    "host": "localhost",
+    "user": "postgres",
+    "password": "sqlbase7comiloveu",
+    "database": "gerkon_db",
+    "port": 5432
+}
+
+def get_db_connection():
+    return psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
+
+def init_db():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Таблица объектов (точек)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS objects (
+            id SERIAL PRIMARY KEY,
+            type VARCHAR(50) NOT NULL,
+            name VARCHAR(255),
+            description TEXT,
+            location GEOGRAPHY(POINT,4326),
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        );
+    """)
+    
+    # Таблица линий
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lines (
+            id SERIAL PRIMARY KEY,
+            from_object_id INT REFERENCES objects(id) ON DELETE CASCADE,
+            to_object_id INT REFERENCES objects(id) ON DELETE CASCADE
+        );
+    """)
+    
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+# Инициализация базы
+init_db()
+
+# ========= FASTAPI =========
+
+app = FastAPI(title="Map REST API")
+
+# ========= СТАТИКА =========
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# DB configs
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_NAME = os.getenv("DB_NAME", "gerkon_db")
-DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASS = os.getenv("DB_PASS", "sqlbase7comiloveu")
-DB_PORT = int(os.getenv("DB_PORT", 5432))
-
-app = FastAPI(title="Map API")
-
-# static
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 @app.get("/")
 def root():
     return FileResponse(os.path.join(BASE_DIR, "static", "index.html"))
 
-# БАЗОВЫЕ МОДЕЛИ ---------------------
+# ========= МОДЕЛИ =========
 
 class PointCreate(BaseModel):
     type: str
-    name: str | None = None
-    description: str | None = None
+    name: Optional[str] = None
+    description: Optional[str] = None
     lat: float
     lon: float
 
 class PointUpdate(BaseModel):
-    id: int
-    name: str | None
-    description: str | None
-
-class PointDelete(BaseModel):
-    id: int
+    name: Optional[str] = None
+    description: Optional[str] = None
 
 class LineCreate(BaseModel):
     a: int
     b: int
 
-# DB CONNECTION -----------------------
+# ========= ROUTES POINTS =========
 
-conn = None
-cursor = None
+@app.get("/api/points", response_model=List[dict])
+def get_points():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, type, name, description,
+               ST_Y(location::geometry) AS lat,
+               ST_X(location::geometry) AS lon
+        FROM objects;
+    """)
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return rows
 
-@app.on_event("startup")
-def startup():
-    global conn, cursor
-    try:
-        conn = psycopg2.connect(
-            dbname=DB_NAME,
-            user=DB_USER,
-            password=DB_PASS,
-            host=DB_HOST,
-            port=DB_PORT
-        )
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        print("Connected to Postgres:", DB_HOST)
-    except Exception as e:
-        print("Failed to connect to Postgres:", e)
-        raise
-
-
-@app.on_event("shutdown")
-def shutdown():
-    global conn, cursor
-    try:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
-    except Exception:
-        pass
-
-# API ------------------------------------
-
-@app.post("/api/add_point")
-def add_point(point: PointCreate):
-
-    query = """
+@app.post("/api/points", response_model=dict)
+def create_point(data: PointCreate):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
         INSERT INTO objects (type, name, description, location)
-        VALUES (%s, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326))
-        RETURNING id
-    """
-    try:
-        cursor.execute(query, (point.type, point.name, point.description, point.lon, point.lat))
-        conn.commit()
-        new = cursor.fetchone()
-        return {"status": "ok", "id": new["id"]}
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        VALUES (%s,%s,%s,ST_SetSRID(ST_MakePoint(%s,%s),4326))
+        RETURNING id;
+    """, (data.type, data.name, data.description, data.lon, data.lat))
+    new_id = cursor.fetchone()["id"]
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return {"id": new_id, "type": data.type, "name": data.name, "description": data.description, "lat": data.lat, "lon": data.lon}
 
-
-@app.get("/api/get_all")
-def get_all():
-    query = """
-        SELECT
-            id,
-            type,
-            name,
-            description,
-            ST_Y(location::geometry) AS lat,
-            ST_X(location::geometry) AS lon,
-            created_at,
-            updated_at
-        FROM objects
-    """
-    try:
-        cursor.execute(query)
-        rows = cursor.fetchall()
-        return {"points": rows}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/update_point")
-def update_point(data: PointUpdate):
-    query = """
+@app.patch("/api/points/{point_id}", response_model=dict)
+def update_point(point_id: int, data: PointUpdate):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM objects WHERE id=%s;", (point_id,))
+    if cursor.fetchone() is None:
+        cursor.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Point not found")
+    cursor.execute("""
         UPDATE objects
-        SET name = %s,
-            description = %s,
-            updated_at = NOW()
-        WHERE id = %s
-    """
-    try:
-        cursor.execute(query, (data.name, data.description, data.id))
-        conn.commit()
-        return {"status": "ok"}
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        SET name=%s, description=%s, updated_at=NOW()
+        WHERE id=%s;
+    """, (data.name, data.description, point_id))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return {"status":"ok"}
 
+@app.delete("/api/points/{point_id}", response_model=dict)
+def delete_point(point_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM objects WHERE id=%s RETURNING id;", (point_id,))
+    if cursor.fetchone() is None:
+        cursor.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Point not found")
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return {"status":"deleted", "id": point_id}
 
-@app.post("/api/delete_point")
-def delete_point(data: PointDelete):
-    query = "DELETE FROM objects WHERE id = %s"
-    try:
-        cursor.execute(query, (data.id,))
-        conn.commit()
-        return {"status": "ok"}
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+# ========= ROUTES LINES =========
 
-# ------------------- Линии ----------------------
-
-# Добавляем таблицу lines (если её нет)
-@app.on_event("startup")
-def create_lines_table():
-    try:
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS lines (
-                id SERIAL PRIMARY KEY,
-                from_object_id INT REFERENCES objects(id) ON DELETE CASCADE,
-                to_object_id INT REFERENCES objects(id) ON DELETE CASCADE
-            )
-        """)
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        print("Failed to create lines table:", e)
-
-@app.post("/api/add_line")
-def add_line(line: LineCreate):
-    query = """
-        INSERT INTO lines (from_object_id, to_object_id)
-        VALUES (%s, %s)
-        RETURNING id
-    """
-    try:
-        cursor.execute(query, (line.a, line.b))
-        conn.commit()
-        new = cursor.fetchone()
-        return {"status": "ok", "id": new["id"]}
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/get_lines")
+@app.get("/api/lines", response_model=List[dict])
 def get_lines():
-    query = "SELECT id, from_object_id, to_object_id FROM lines"
-    try:
-        cursor.execute(query)
-        rows = cursor.fetchall()
-        return {"lines": rows}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, from_object_id, to_object_id FROM lines;")
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return rows
+
+@app.post("/api/lines", response_model=dict)
+def create_line(data: LineCreate):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO lines (from_object_id, to_object_id)
+        VALUES (%s,%s) RETURNING id;
+    """, (data.a, data.b))
+    new_id = cursor.fetchone()["id"]
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return {"id": new_id, "a": data.a, "b": data.b}
